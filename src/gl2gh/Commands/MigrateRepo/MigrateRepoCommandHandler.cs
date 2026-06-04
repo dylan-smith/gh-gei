@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading.Tasks;
 using OctoshiftCLI.Commands;
 using OctoshiftCLI.Extensions;
@@ -48,7 +48,10 @@ public class MigrateRepoCommandHandler : ICommandHandler<MigrateRepoCommandArgs>
 
         ValidateOptions(args);
 
-        await _gitlabApi.LogServerVersion();
+        if (_gitlabApi != null)
+        {
+            await _gitlabApi.LogServerVersion();
+        }
 
         var migrationSourceId = "";
 
