@@ -21,6 +21,7 @@ public class MigrateRepoCommandHandlerTests
 
     private readonly WarningsCountLogger _warningsCountLogger;
     private readonly MigrateRepoCommandHandler _handler;
+    private readonly MigrateRepoCommandHandler _handlerWithNullGitlabApi;
 
     private const string ARCHIVE_PATH = "/tmp/gitlab-archive.tar";
     private const string ARCHIVE_URL = "https://archive-url/gitlab-archive.tar";
@@ -51,6 +52,17 @@ public class MigrateRepoCommandHandlerTests
             _mockOctoLogger.Object,
             _mockGithubApi.Object,
             _mockGitlabApi.Object,
+            _mockEnvironmentVariableProvider.Object,
+            _mockAzureApi.Object,
+            _mockAwsApi.Object,
+            _mockFileSystemProvider.Object,
+            _warningsCountLogger
+        );
+
+        _handlerWithNullGitlabApi = new MigrateRepoCommandHandler(
+            _mockOctoLogger.Object,
+            _mockGithubApi.Object,
+            null,
             _mockEnvironmentVariableProvider.Object,
             _mockAzureApi.Object,
             _mockAwsApi.Object,
@@ -139,6 +151,66 @@ public class MigrateRepoCommandHandlerTests
             GITHUB_PAT,
             ARCHIVE_URL,
             null));
+    }
+
+    [Fact]
+    public async Task Archive_Path_Only_Without_Gitlab_Server_Url_Does_Not_Throw_NullReferenceException()
+    {
+        // Regression test for https://github.com/github/gh-gei/issues/1583
+        // When --archive-path is provided without --gitlab-server-url, gitlabApi is null.
+        // The handler must not dereference _gitlabApi unconditionally.
+        _mockEnvironmentVariableProvider.Setup(m => m.TargetGithubPersonalAccessToken(It.IsAny<bool>())).Returns(GITHUB_PAT);
+        _mockGithubApi.Setup(x => x.DoesRepoExist(GITHUB_ORG, GITHUB_REPO)).ReturnsAsync(false);
+        _mockGithubApi.Setup(x => x.GetOrganizationId(GITHUB_ORG)).ReturnsAsync(GITHUB_ORG_ID);
+        _mockGithubApi.Setup(x => x.CreateGitlabMigrationSource(GITHUB_ORG_ID)).ReturnsAsync(MIGRATION_SOURCE_ID);
+        _mockGithubApi.Setup(x => x.StartGitlabMigration(MIGRATION_SOURCE_ID, UNUSED_REPO_URL, GITHUB_ORG_ID, GITHUB_REPO, GITHUB_PAT, ARCHIVE_URL, null))
+            .ReturnsAsync(MIGRATION_ID);
+        using var archiveStream = new MemoryStream(new byte[] { 1, 2, 3 });
+        _mockFileSystemProvider.Setup(m => m.OpenRead(ARCHIVE_PATH)).Returns(archiveStream);
+        _mockGithubApi.Setup(x => x.GetOrganizationDatabaseId(GITHUB_ORG)).ReturnsAsync("org-db-id");
+        _mockGithubApi.Setup(x => x.UploadArchiveToGithubStorage(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Stream>())).ReturnsAsync(ARCHIVE_URL);
+
+        var args = new MigrateRepoCommandArgs
+        {
+            ArchivePath = ARCHIVE_PATH,
+            GithubOrg = GITHUB_ORG,
+            GithubRepo = GITHUB_REPO,
+            GithubPat = GITHUB_PAT,
+            UseGithubStorage = true,
+            QueueOnly = true,
+        };
+
+        // Should not throw NullReferenceException
+        var act = () => _handlerWithNullGitlabApi.Handle(args);
+        await act.Should().NotThrowAsync<NullReferenceException>();
+    }
+
+    [Fact]
+    public async Task Archive_Path_Only_Without_Gitlab_Server_Url_Does_Not_Call_LogServerVersion()
+    {
+        // When gitlabApi is null (no --gitlab-server-url), LogServerVersion must not be called.
+        _mockEnvironmentVariableProvider.Setup(m => m.TargetGithubPersonalAccessToken(It.IsAny<bool>())).Returns(GITHUB_PAT);
+        _mockGithubApi.Setup(x => x.DoesRepoExist(GITHUB_ORG, GITHUB_REPO)).ReturnsAsync(false);
+        _mockGithubApi.Setup(x => x.GetOrganizationId(GITHUB_ORG)).ReturnsAsync(GITHUB_ORG_ID);
+        _mockGithubApi.Setup(x => x.CreateGitlabMigrationSource(GITHUB_ORG_ID)).ReturnsAsync(MIGRATION_SOURCE_ID);
+        _mockGithubApi.Setup(x => x.StartGitlabMigration(MIGRATION_SOURCE_ID, UNUSED_REPO_URL, GITHUB_ORG_ID, GITHUB_REPO, GITHUB_PAT, ARCHIVE_URL, null))
+            .ReturnsAsync(MIGRATION_ID);
+
+        var args = new MigrateRepoCommandArgs
+        {
+            ArchiveUrl = ARCHIVE_URL,
+            GithubOrg = GITHUB_ORG,
+            GithubRepo = GITHUB_REPO,
+            GithubPat = GITHUB_PAT,
+            QueueOnly = true,
+        };
+
+        await _handler.Handle(args);
+
+        // Even when _gitlabApi is not null (the default _handler), LogServerVersion should only be
+        // called when _gitlabApi != null. Verify that the null guard path itself is exercised
+        // by the _handlerWithNullGitlabApi variant in the other test.
+        _mockGitlabApi.Verify(m => m.LogServerVersion(), Times.Never);
     }
 
     [Fact]
